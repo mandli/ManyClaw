@@ -248,8 +248,20 @@ struct Solver
   std::vector<real> wave;
   std::vector<real> wave_speed;
 
-  // Non-owned references
-  //Solution& solution;
+  // Time stepping control
+  bool dt_variable;
+  int max_steps;
+  real dt, cfl_desired, cfl_max, dt_max;
+  std::vector<real> q_old;
+
+  // Boundary condition function
+  set_bc_t set_bc; 
+
+  // Riemann solver grid evaluator
+  rp_grid_eval_t rp_grid_eval;
+
+  // Grid updater
+  updater_t update;
 
   Solver();
 
@@ -260,11 +272,11 @@ struct Solver
 
   void define(int* num_cells, int num_eqn, int num_ghost, int num_wave);
   
-  void step(Solution& solution, double dt, set_bc_t set_bc, 
-                                           rp_grid_eval_t rp_grid_eval,
-                                           updater_t update);
+  real step(Solution *solution);
 
-  inline real cfl(int nx, int ny, int mbc, int meqn, int mwaves, real dtdx)
+  int evolve_to_time(Solution &solution, real t_end);
+
+  inline real calculate_cfl(int nx, int ny, int mbc, int meqn, int mwaves, real dtdx)
   {
     EdgeFieldIndexer efi(nx, ny, mbc, meqn, mwaves);
     real cfl = 0.0;

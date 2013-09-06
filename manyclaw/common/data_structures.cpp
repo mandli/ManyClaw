@@ -4,6 +4,7 @@
 #include <iomanip>
 #include <sstream>
 #include <fstream>
+#include <cmath>
 
 Grid::Grid(int nx, int ny)
 {
@@ -115,14 +116,24 @@ Solver::Solver(Solution& solution, int num_ghost, int num_wave):
   const int nx = solution.grid.num_cells[0];
   const int ny = solution.grid.num_cells[1];
   const int num_eqn = solution.state.num_eqn;
+
   //const int dim = solution.grid.dim;
   // Outputs on interfaces
   EdgeFieldIndexer efi(nx, ny, num_ghost, num_eqn);
   EdgeFieldIndexer wave_efi(nx, ny, num_ghost, num_eqn, num_wave);
+  EdgeFieldIndexer s_efi(nx, ny, num_ghost, num_wave);
   amdq.resize(efi.size());
   apdq.resize(efi.size());
   wave.resize(wave_efi.size());
-  wave_speed.resize(wave_efi.size());
+  wave_speed.resize(s_efi.size());
+
+  // Default values of member data
+  cfl_desired = 0.4;
+  cfl_max = 0.5;
+  dt_variable = true;
+  dt_max = 1e99;
+  max_steps = 10000;
+  dt = 0.1;
 }
 
 Solver::Solver(int* num_cells, int num_eqn, int num_ghost, int num_wave):
@@ -134,10 +145,19 @@ Solver::Solver(int* num_cells, int num_eqn, int num_ghost, int num_wave):
   // Outputs on interfaces
   EdgeFieldIndexer efi(nx, ny, num_ghost, num_eqn);
   EdgeFieldIndexer wave_efi(nx, ny, num_ghost, num_eqn, num_wave);
+  EdgeFieldIndexer s_efi(nx, ny, num_ghost, num_wave);
   amdq.resize(efi.size());
   apdq.resize(efi.size());
   wave.resize(wave_efi.size());
-  wave_speed.resize(wave_efi.size());
+  wave_speed.resize(s_efi.size());
+
+  // Default values of member data
+  cfl_desired = 0.4;
+  cfl_max = 0.5;
+  dt_variable = true;
+  dt_max = 1e99;
+  max_steps = 10000;
+  dt = 0.1;
 }
 
 void Solver::define(int* num_cells, int num_eqn, int num_ghost, int num_wave)
@@ -150,32 +170,117 @@ void Solver::define(int* num_cells, int num_eqn, int num_ghost, int num_wave)
   // Outputs on interfaces
   EdgeFieldIndexer efi(nx, ny, num_ghost, num_eqn);
   EdgeFieldIndexer wave_efi(nx, ny, num_ghost, num_eqn, num_wave);
+  EdgeFieldIndexer s_efi(nx, ny, num_ghost, num_wave);
   amdq.resize(efi.size());
   apdq.resize(efi.size());
   wave.resize(wave_efi.size());
-  wave_speed.resize(wave_efi.size());
+  wave_speed.resize(s_efi.size());
+
+  if (this->dt_variable)
+  {
+    FieldIndexer fi(nx, ny, num_ghost, num_eqn);
+    q_old.resize(fi.size());
+  }
 }
 
-void Solver::step(Solution& solution, double dt, set_bc_t set_bc, 
-                                                 rp_grid_eval_t rp_grid_eval, 
-                                                 updater_t update)
+int Solver::evolve_to_time(Solution &solution, real t_end)
+{
+  real t_start = solution.t;
+  real cfl;
+  FieldIndexer fi(solution.grid.num_cells[0], solution.grid.num_cells[1],
+                  num_ghost, solution.state.num_eqn);
+
+  // Check to see if we need to size q_old storage
+  if (dt_variable && q_old.size() == 0)
+    q_old.resize(fi.size());
+
+  // ========================
+  //  Main time stepping loop
+  for (int n=0; n < max_steps; ++n)
+  {
+    // Determine time step if bounded by t_end
+    if (solution.t + dt > t_end && t_start < t_end)
+      dt = t_end - solution.t;
+    if (t_end - solution.t - dt < 1e-14 * solution.t)
+      dt = t_end - solution.t;
+
+    // Keep backup of q in case we need to retake a step
+    // TODO: Probably should save aux here as well
+    if (dt_variable)
+    {
+      for (unsigned index = 0; index < fi.size(); ++index)
+        q_old[index] = solution.state.q[index];
+    }
+      
+    // Take one time step using the solver's current dt
+    cfl = step(&solution);
+
+    // Check CFL
+    if (cfl <= cfl_max)
+    {
+      // Accept this time step
+      if (dt_variable)
+        solution.t += dt;
+      else
+        // Avoid roundoff error if dt_variable == False
+        solution.t = t_start + (n + 1) * dt;
+    }
+    else
+    {
+      // Reject this step
+      if (dt_variable)
+      {
+        // Go back to saved q array
+        for (unsigned index = 0; index < fi.size(); ++index)
+          solution.state.q[index] = q_old[index];
+      }
+      else
+      {
+        // Give up, we cannot adapt
+        return 1;
+      }
+    }
+
+    // Choose new time step
+    if (dt_variable)
+    {
+      if (cfl > 0.0)
+        dt = fmin(dt_max, dt * cfl_desired / cfl);
+      else
+        dt = dt_max;
+    }
+    //  End main time stepping loop
+    // =============================
+
+    // Check to see if we are done
+    if (solution.t >= t_end)
+      break;
+  }
+
+  return 0;
+}
+
+real Solver::step(Solution *solution)
 {
   // Note that this all will break if the grid is not uniform!
-  real dtdx = dt / solution.grid.dx[0];
+  real dtdx = dt / solution->grid.dx[0];
 
-  set_bc(&solution.state.q[0], &solution.state.aux[0],
-        solution.grid.num_cells[0], solution.grid.num_cells[1],
-        num_ghost, solution.state.num_eqn);
+  set_bc(&solution->state.q[0], &solution->state.aux[0],
+        solution->grid.num_cells[0], solution->grid.num_cells[1],
+        num_ghost, solution->state.num_eqn);
 
-  rp_grid_eval(&solution.state.q[0], &solution.state.aux[0], 
-                solution.state.aux_global, solution.grid.num_cells[0], 
-                solution.grid.num_cells[1],
+  rp_grid_eval(&solution->state.q[0], &solution->state.aux[0], 
+                solution->state.aux_global, solution->grid.num_cells[0], 
+                solution->grid.num_cells[1],
                &amdq[0], &apdq[0], &wave[0], &wave_speed[0]);
 
-  update(&solution.state.q[0], &solution.state.aux[0], 
-          solution.grid.num_cells[0], solution.grid.num_cells[1],
+  update(&solution->state.q[0], &solution->state.aux[0], 
+          solution->grid.num_cells[0], solution->grid.num_cells[1],
           &amdq[0], &apdq[0], &wave[0], &wave_speed[0],
-          num_ghost, solution.state.num_eqn, dtdx);
+          num_ghost, solution->state.num_eqn, dtdx);
 
-  solution.t += dt;
+  // Compute CFL
+  return calculate_cfl(solution->grid.num_cells[0], solution->grid.num_cells[1],
+                        num_ghost, solution->state.num_eqn, num_wave,
+                        dtdx);
 }

@@ -75,22 +75,18 @@ int main(int argc, char ** argv)
   // Initialize solver
   Solver solver(solution, num_ghost, num_wave);
   solver.num_ghost = num_ghost;
+  solver.dt_variable = false;
 
-  // Take multiple steps
-  double dt = grid.dx[0] * 0.4 / sound_speed;
-  for (int frame = 1; frame <= 20; frame++)
-  {
-    for (int steps = 0; steps < 10; steps++)
-    {
-      // Take a single time step
-      solver.step(solution, dt, set_zero_order_extrap_BCs, 
-                                acoustics_const_rp_grid_eval_void_serial,
-                                updater_first_order_dimensional_splitting);
-      std::cout << "Solution now at t=" << solution.t << "\n";
-    }
-    solution.write(frame, output_path);      
+  // Run simulation
+  int num_output_times = 10;
+  real t_final = 0.12;
+  real dt = t_final / double(num_output_times);
+  for(int n; n < num_output_times; ++n)
+  {    
+    solver.evolve_to_time(solution, solution.t + dt);
+    std::cout << "Solution now at t=" << solution.t << "\n";
+    solution.write(n + 1, output_path);  
   }
-
 
   return 0;
 }
