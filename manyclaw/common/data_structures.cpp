@@ -35,7 +35,7 @@ void Solution::write(int frame, std::string output_path)
   q_file.open(q_file_path.str().c_str(), std::ios::out);
 
   // Write header for fort.q file
-  q_file << std::setiosflags(std::ios::fixed) << std::setprecision(5) 
+  q_file << std::setiosflags(std::ios::fixed) << std::setprecision(5)
               << 1 << "                 grid_number\n";
   q_file << std::setiosflags(std::ios::fixed) << std::setprecision(5)
               << 1 << "                 AMR_level\n";
